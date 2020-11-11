@@ -11,7 +11,11 @@ GAMMA = 0.99
 LEARNING_RATE = 5e-4
 REPLAY_BUFFER_SIZE = 50_000
 TARGET_RESET_INTERVAL = 500
+TRAINING_STARTS = 1000
 TRAINING_FREQ = 4
+EPSILON_START = 1.0
+EPSILON_END = 0.01
+EPSILON_DURATION = 10_000
 
 
 def make(state_space: Box, action_space: Discrete, activation_fn=nn.ReLU):
@@ -33,7 +37,7 @@ class DoubleDQN:
         self.q_target = make(state_space, action_space)
         self.q_target.load_state_dict(self.q.state_dict())
         self.optimizer = optim.Adam(self.q.parameters(), lr=LEARNING_RATE)
-        self.epsilon = 1.0
+        self.epsilon = EPSILON_START
         self.num_trains = 0
 
     def explore(self, state: torch.Tensor) -> int:
@@ -64,7 +68,9 @@ class DoubleDQN:
         if self.num_trains > 0 and self.num_trains % TARGET_RESET_INTERVAL == 0:
             self.q_target.load_state_dict(self.q.state_dict())
 
-        self.epsilon = max(0.01, 1.0 - 0.99 * self.num_trains / 10_000)
+        self.epsilon = max(
+            EPSILON_END, EPSILON_START - (EPSILON_START - EPSILON_END) * self.num_trains / EPSILON_DURATION
+        )
 
 
 def main():
@@ -77,23 +83,25 @@ def main():
 
     state, done = env.reset(), False
     episode_rewards = [0]
-    while sum(episode_rewards[-100:]) / 100 < 250:
+    while sum(episode_rewards[-100:]) / 100 < 195:
         action = ddqn.explore(state)
+
         state_prime, reward, done, info = env.step(action)
         buffer.add(state, action, reward, done, state_prime)
+        state = state_prime
+        episode_rewards[-1] += reward
 
         if done:
             state, done = env.reset(), False
             episode_rewards.append(0)
-        else:
-            state = state_prime
-            episode_rewards[-1] += reward
 
-        if buffer.size > 1000 and buffer.num_steps % TRAINING_FREQ == 0:
+        if buffer.size > TRAINING_STARTS and buffer.num_steps % TRAINING_FREQ == 0:
             ddqn.train(buffer)
 
         if buffer.num_steps > 0 and buffer.num_steps % 1000 == 0:
             print(f"{buffer.num_steps}: {sum(episode_rewards[-100:]) / 100:0.2f}")
+
+    print(f"{buffer.num_steps}: {sum(episode_rewards[-100:]) / 100:0.2f}")
 
     while True:
         state, done = env.reset(), False
