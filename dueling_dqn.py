@@ -18,24 +18,41 @@ EPSILON_END = 0.01
 EPSILON_DURATION = 10_000
 
 
-def make(state_space: Box, action_space: Discrete, activation_fn=nn.ReLU):
-    return nn.Sequential(
-        nn.Linear(state_space.shape[0], 32),
-        activation_fn(),
-        nn.Linear(32, 32),
-        activation_fn(),
-        nn.Linear(32, action_space.n),
-    )
+class DQN(nn.Module):
+    def __init__(self, state_space: Box, action_space: Discrete, activation_fn=nn.ReLU):
+        super().__init__()
+
+        self.advantage = nn.Sequential(
+            nn.Linear(state_space.shape[0], 32),
+            activation_fn(),
+            nn.Linear(32, 32),
+            activation_fn(),
+            nn.Linear(32, action_space.n),
+        )
+        self.value = nn.Sequential(
+            nn.Linear(state_space.shape[0], 32),
+            activation_fn(),
+            nn.Linear(32, 32),
+            activation_fn(),
+            nn.Linear(32, 1),
+        )
+
+    def state_value(self, x):
+        return self.value(x)
+
+    def forward(self, x):
+        return self.advantage(x)
 
 
-class DoubleDQN:
+class DuelingDQN:
     def __init__(self, state_space: Box, action_space: Discrete):
         self.state_space = state_space
         self.action_space = action_space
 
-        self.q = make(state_space, action_space)
-        self.q_target = make(state_space, action_space)
+        self.q = DQN(state_space, action_space)
+        self.q_target = DQN(state_space, action_space)
         self.q_target.load_state_dict(self.q.state_dict())
+
         self.optimizer = optim.Adam(self.q.parameters(), lr=LEARNING_RATE)
         self.epsilon = EPSILON_START
         self.num_trains = 0
@@ -49,14 +66,21 @@ class DoubleDQN:
     def exploit(self, state: torch.Tensor) -> int:
         return self.q(state).argmax().item()
 
+    def centered_q(self, q: DQN, state: torch.Tensor):
+        advantage = q(state)
+        state_value = q.state_value(state)
+        advantages_mean = advantage.mean()
+        centered_advantages = advantage - advantages_mean.unsqueeze(0)
+        return state_value + centered_advantages
+
     def train(self, buffer: ReplayBuffer):
         s, a, r, done, s_prime = buffer.sample(MINI_BATCH_SIZE)
 
         with torch.no_grad():
-            max_q_prime = self.q_target(s_prime).max(1)[0].unsqueeze(1)
+            max_q_prime = self.centered_q(self.q_target, s_prime).max(1)[0].unsqueeze(1)
             target_q = r + GAMMA * max_q_prime * done
 
-        current_q = self.q(s).gather(1, a)
+        current_q = self.centered_q(self.q, s).gather(1, a)
 
         loss = F.smooth_l1_loss(current_q, target_q)
 
@@ -79,7 +103,7 @@ def main():
 
     env = TorchWrapper(gym.make("CartPole-v1"))
 
-    ddqn = DoubleDQN(env.observation_space, env.action_space)
+    ddqn = DuelingDQN(env.observation_space, env.action_space)
     buffer = ReplayBuffer(env.observation_space, env.action_space, REPLAY_BUFFER_SIZE)
 
     state, done = env.reset(), False
