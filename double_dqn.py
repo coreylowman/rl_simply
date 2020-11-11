@@ -4,15 +4,14 @@ import torch.nn.functional as F
 from gym.spaces import Box, Discrete
 from memory import ReplayBuffer
 from wrappers import TorchWrapper
-import numpy as np
 
 
-NUM_TRAIN_EPOCHS = 8
 MINI_BATCH_SIZE = 32
 GAMMA = 0.99
 LEARNING_RATE = 5e-4
 REPLAY_BUFFER_SIZE = 50_000
 TARGET_RESET_INTERVAL = 500
+TRAINING_FREQ = 4
 
 
 def make(state_space: Box, action_space: Discrete, activation_fn=nn.ReLU):
@@ -71,33 +70,30 @@ class DoubleDQN:
 def main():
     import gym
 
-    env = gym.make("CartPole-v1")
-    env = TorchWrapper(env)
+    env = TorchWrapper(gym.make("CartPole-v1"))
 
     ddqn = DoubleDQN(env.observation_space, env.action_space)
     buffer = ReplayBuffer(env.observation_space, env.action_space, REPLAY_BUFFER_SIZE)
 
-    episode_rewards = []
+    state, done = env.reset(), False
+    episode_rewards = [0]
     while sum(episode_rewards[-100:]) / 100 < 250:
-        state, done = env.reset(), False
-        episode_rewards.append(0)
-        while not done:
-            action = ddqn.explore(state)
-            state_prime, reward, done, info = env.step(action)
-            buffer.add(state, action, reward, done, state_prime)
+        action = ddqn.explore(state)
+        state_prime, reward, done, info = env.step(action)
+        buffer.add(state, action, reward, done, state_prime)
+
+        if done:
+            state, done = env.reset(), False
+            episode_rewards.append(0)
+        else:
             state = state_prime
             episode_rewards[-1] += reward
 
-            if buffer.size > 1000 and buffer.num_steps % 4 == 0:
-                ddqn.train(buffer)
+        if buffer.size > 1000 and buffer.num_steps % TRAINING_FREQ == 0:
+            ddqn.train(buffer)
 
-                if buffer.num_steps % 100 == 0:
-                    mean_reward = sum(episode_rewards[-100:]) / 100
-                    max_reward = max(episode_rewards[-100:])
-                    min_reward = min(episode_rewards[-100:])
-                    print(
-                        f"{buffer.num_steps}: {mean_reward:0.2f} [{min_reward:0.2f} {max_reward:0.2f}] | {ddqn.epsilon:0.2f}"
-                    )
+        if buffer.num_steps > 0 and buffer.num_steps % 1000 == 0:
+            print(f"{buffer.num_steps}: {sum(episode_rewards[-100:]) / 100:0.2f}")
 
     while True:
         state, done = env.reset(), False
