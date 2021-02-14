@@ -1,21 +1,22 @@
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
+import gym
 from gym.spaces import Box, Discrete
 from memory import ReplayBuffer
 from wrappers import TorchWrapper
-
 
 MINI_BATCH_SIZE = 32
 GAMMA = 0.99
 LEARNING_RATE = 5e-4
 REPLAY_BUFFER_SIZE = 50_000
-TARGET_RESET_INTERVAL = 500
-TRAINING_STARTS = 1000
-TRAINING_FREQ = 4
+TARGET_UPDATE_DELAY = 1000
+NUM_RANDOM_ACTIONS = 2000
+LEARNING_STARTS = 1000
+UPDATES_PER_STEP = 4
 EPSILON_START = 1.0
 EPSILON_END = 0.01
-EPSILON_DURATION = 10_000
+EPSILON_DURATION = 5_000
 
 
 def make(state_space: Box, action_space: Discrete, activation_fn=nn.ReLU):
@@ -37,26 +38,48 @@ class DoubleDQN:
         self.q_target = make(state_space, action_space)
         self.q_target.load_state_dict(self.q.state_dict())
         self.optimizer = optim.Adam(self.q.parameters(), lr=LEARNING_RATE)
-        self.epsilon = EPSILON_START
-        self.num_trains = 0
 
-    def explore(self, state: torch.Tensor) -> int:
-        if torch.rand(1) < self.epsilon:
-            return self.action_space.sample()
-        else:
-            return self.exploit(state)
+        self.num_steps = 0
+        self.num_updates = 0
 
-    def exploit(self, state: torch.Tensor) -> int:
-        return self.q(state).argmax().item()
+    @property
+    def epsilon(self):
+        return max(
+            EPSILON_END,
+            EPSILON_START - (EPSILON_START - EPSILON_END) * self.num_steps / EPSILON_DURATION,
+        )
 
-    def train(self, buffer: ReplayBuffer):
-        s, a, r, done, s_prime = buffer.sample(MINI_BATCH_SIZE)
+    def act(self, state: torch.Tensor, is_training: bool = False) -> int:
+        if is_training:
+            self.num_steps += 1
+
+            if self.num_steps < NUM_RANDOM_ACTIONS:
+                return self.action_space.sample()
+
+            if torch.rand(1) < self.epsilon:
+                return self.action_space.sample()
+
+        return self.q(state.unsqueeze(0)).argmax().item()
+
+    def update(self, buffer: ReplayBuffer):
+        if buffer.size < LEARNING_STARTS:
+            return
+
+        for i_update in range(UPDATES_PER_STEP):
+            self._update_once(buffer)
+
+        self.num_updates += 1
+        if self.num_updates > 0 and self.num_updates % TARGET_UPDATE_DELAY == 0:
+            self.q_target.load_state_dict(self.q.state_dict())
+
+    def _update_once(self, buffer: ReplayBuffer):
+        state, action, reward, done, next_state = buffer.sample(MINI_BATCH_SIZE)
 
         with torch.no_grad():
-            max_q_prime = self.q_target(s_prime).max(1)[0].unsqueeze(1)
-            target_q = r + GAMMA * max_q_prime * done
+            max_q_prime = self.q_target(next_state).max(dim=1)[0].unsqueeze(1)
+            target_q = reward + GAMMA * max_q_prime * done
 
-        current_q = self.q(s).gather(1, a)
+        current_q = self.q(state).gather(dim=1, index=action)
 
         loss = F.smooth_l1_loss(current_q, target_q)
 
@@ -64,55 +87,52 @@ class DoubleDQN:
         loss.backward()
         self.optimizer.step()
 
-        self.num_trains += 1
-        if self.num_trains > 0 and self.num_trains % TARGET_RESET_INTERVAL == 0:
-            self.q_target.load_state_dict(self.q.state_dict())
+    def learn(self, env: gym.Env, buffer: ReplayBuffer, steps: int):
+        state = env.reset()
 
-        self.epsilon = max(
-            EPSILON_END,
-            EPSILON_START - (EPSILON_START - EPSILON_END) * self.num_trains / EPSILON_DURATION,
-        )
+        episode_reward = 0
+        for i_step in range(steps):
+            action = self.act(state, is_training=True)
+
+            next_state, reward, done, info = env.step(action)
+            # env.render()
+
+            self.update(buffer.add(state, action, reward, done, next_state))
+
+            state = next_state
+            episode_reward += reward
+            if done:
+                print(self.num_steps, self.epsilon, episode_reward)
+
+                state = env.reset()
+                episode_reward = 0
 
 
-def main():
-    import gym
+def main(seed=0):
+    torch.manual_seed(seed)
 
     env = TorchWrapper(gym.make("CartPole-v1"))
+    env.seed(seed)
 
     ddqn = DoubleDQN(env.observation_space, env.action_space)
     buffer = ReplayBuffer(env.observation_space, env.action_space, REPLAY_BUFFER_SIZE)
 
-    state, done = env.reset(), False
-    episode_rewards = [0]
-    while sum(episode_rewards[-100:]) / 100 < 195:
-        action = ddqn.explore(state)
+    ddqn.learn(env, buffer, 50_000)
 
-        state_prime, reward, done, info = env.step(action)
-        buffer.add(state, action, reward, done, state_prime)
-        state = state_prime
-        episode_rewards[-1] += reward
+    torch.save(ddqn.q.state_dict(), "ddqn.pt")
+    ddqn.q.load_state_dict(torch.load("ddqn.pt"))
 
-        if done:
-            state, done = env.reset(), False
-            episode_rewards.append(0)
-
-        if buffer.size > TRAINING_STARTS and buffer.num_steps % TRAINING_FREQ == 0:
-            ddqn.train(buffer)
-
-        if buffer.num_steps > 0 and buffer.num_steps % 1000 == 0:
-            print(f"{buffer.num_steps}: {sum(episode_rewards[-100:]) / 100:0.2f}")
-
-    print(f"{buffer.num_steps}: {sum(episode_rewards[-100:]) / 100:0.2f}")
-
+    state = env.reset()
+    env.render()
+    episode_reward = 0
     while True:
-        state, done = env.reset(), False
+        state, reward, done, info = env.step(ddqn.act(state))
+        episode_reward += reward
         env.render()
-        score = 0
-        while not done:
-            state, reward, done, info = env.step(ddqn.exploit(state))
-            env.render()
-            score += reward
-        print(score)
+        if done:
+            state = env.reset()
+            print(episode_reward)
+            episode_reward = 0
 
     env.close()
 
