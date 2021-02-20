@@ -106,30 +106,11 @@ class SAC:
     def update(self, buffer: ReplayBuffer):
         batch = buffer.sample(MINI_BATCH_SIZE)
 
-        critic_loss = self.update_critics(batch)
-        actor_loss = self.update_actor(batch)
-        alpha_loss = self.update_alpha(batch)
+        self.update_critics(batch)
+        self.update_actor(batch)
+        self.update_alpha(batch)
 
         self.soft_update_target_critics()
-
-        # print(critic_loss, actor_loss, alpha_loss)
-
-    def update_actor(self, batch: Batch):
-        with torch.no_grad():
-            alpha = torch.exp(self.log_alpha)
-
-        action, log_prob = self.actor(batch.state)
-
-        q1, q2 = self.critics(torch.cat((batch.state, action), -1))
-        q = torch.minimum(q1, q2)
-
-        actor_loss = torch.mean(log_prob * alpha.detach() - q)
-
-        self.actor_opt.zero_grad()
-        actor_loss.backward()
-        self.actor_opt.step()
-
-        return actor_loss.item()
 
     def update_critics(self, batch: Batch):
         with torch.no_grad():
@@ -141,15 +122,38 @@ class SAC:
             target_q = batch.reward + DISCOUNT * batch.done * (next_q - alpha * next_log_prob)
 
         q1, q2 = self.critics(torch.cat((batch.state, batch.action), -1))
-        q1_loss = 0.5 * (q1 - target_q.detach()).square().mean()
-        q2_loss = 0.5 * (q2 - target_q.detach()).square().mean()
-        critic_loss = q1_loss + q2_loss
+        q1_loss = (q1 - target_q).square().mean()
+        q2_loss = (q2 - target_q).square().mean()
+        critic_loss = (q1_loss + q2_loss) / 2.0
 
         self.critics_opt.zero_grad()
         critic_loss.backward()
         self.critics_opt.step()
 
-        return critic_loss.item()
+    def update_actor(self, batch: Batch):
+        with torch.no_grad():
+            alpha = torch.exp(self.log_alpha)
+
+        action, log_prob = self.actor(batch.state)
+
+        q1, q2 = self.critics(torch.cat((batch.state, action), -1))
+        q = torch.minimum(q1, q2)
+
+        actor_loss = torch.mean(log_prob * alpha - q)
+
+        self.actor_opt.zero_grad()
+        actor_loss.backward()
+        self.actor_opt.step()
+
+    def update_alpha(self, batch: Batch):
+        with torch.no_grad():
+            _, log_prob = self.actor(batch.state)
+
+        alpha_loss = torch.mean(-self.log_alpha * (log_prob + self.target_entropy))
+
+        self.alpha_opt.zero_grad()
+        alpha_loss.backward()
+        self.alpha_opt.step()
 
     def soft_update_target_critics(self):
         curr_state = self.critics.state_dict()
@@ -157,18 +161,6 @@ class SAC:
         self.critic_targets.load_state_dict(
             {k: TAU * curr_state[k] + (1.0 - TAU) * targ_state[k] for k in curr_state}
         )
-
-    def update_alpha(self, batch: Batch):
-        with torch.no_grad():
-            _, log_prob = self.actor(batch.state)
-
-        alpha_loss = torch.mean(-1.0 * self.log_alpha * (log_prob + self.target_entropy).detach())
-
-        self.alpha_opt.zero_grad()
-        alpha_loss.backward()
-        self.alpha_opt.step()
-
-        return alpha_loss.item()
 
     def learn(self, env: gym.Env, eval_env: gym.Env, buffer: ReplayBuffer, steps: int):
         state = env.reset()
@@ -193,7 +185,7 @@ class SAC:
             if i_step % 1000 == 0:
                 eval_env.seed(42)
                 score = 0
-                for i_eval_eps in range(1):
+                for i_eval_eps in range(5):
                     state, done = eval_env.reset(), False
                     eval_env.render()
                     while not done:
@@ -209,6 +201,7 @@ def main(seed=0):
 
     env = TorchWrapper(NormalizeActionsWrapper(gym.make("Pendulum-v0")))
     env.seed(seed)
+    env.action_space.seed(seed)
 
     eval_env = TorchWrapper(NormalizeActionsWrapper(gym.make("Pendulum-v0")))
     eval_env.seed(seed + 1)
