@@ -1,3 +1,4 @@
+from datetime import datetime
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
@@ -13,13 +14,11 @@ MINI_BATCH_SIZE = 256
 REPLAY_BUFFER_SIZE = 50_000
 LEARNING_STARTS = 1000
 UPDATES_PER_STEP = 1
-
 ACTOR_LR = 3e-4
 CRITIC_LR = 3e-4
 ALPHA_LR = 3e-4
 DISCOUNT = 0.99
 TAU = 0.005
-TEMPERATURE = 1.0
 
 
 def MLP(inp_dim: int, out_dim: int, hid_dim: int = 256, activation_fn=nn.ReLU):
@@ -53,22 +52,20 @@ class Actor(nn.Module):
         self.out_dim = out_dim
         self.trunk = MLP(inp_dim, 2 * out_dim, *args, **kwargs)
 
-    def forward(self, x, temperature=TEMPERATURE):
+    def forward(self, x, sample=True):
         x = self.trunk(x)
 
         mean, logstd = torch.split(x, self.out_dim, -1)
         logstd = torch.clamp(logstd, -20, 2)
 
-        dist = Normal(mean, torch.exp(logstd) * temperature)
+        dist = Normal(mean, torch.exp(logstd) * float(sample))
 
         action = dist.rsample()
         squashed_action = torch.tanh(action)
 
         log_prob = dist.log_prob(action)
-        squash_correction = torch.sum(
-            torch.log(1 - squashed_action.square() + 1e-6), -1, keepdim=True
-        )
-        log_prob -= squash_correction
+        # squash_correction = torch.log(1 - squashed_action.square() + 1e-6)
+        # log_prob -= squash_correction  # TODO what does this impact?
 
         return squashed_action, log_prob
 
@@ -96,11 +93,7 @@ class SAC:
 
     @torch.no_grad()
     def act(self, state: torch.Tensor, is_training: bool = False) -> int:
-        if is_training:
-            action, _ = self.actor(state)
-            return action
-
-        action, _ = self.actor(state, temperature=0.0)
+        action, _ = self.actor(state, sample=is_training)
         return action
 
     def update(self, buffer: ReplayBuffer):
@@ -156,13 +149,13 @@ class SAC:
         self.alpha_opt.step()
 
     def soft_update_target_critics(self):
-        curr_state = self.critics.state_dict()
-        targ_state = self.critic_targets.state_dict()
-        self.critic_targets.load_state_dict(
-            {k: TAU * curr_state[k] + (1.0 - TAU) * targ_state[k] for k in curr_state}
-        )
+        for p, target_p in zip(self.critics.parameters(), self.critic_targets.parameters()):
+            target_p.data.copy_(TAU * p.data + (1.0 - TAU) * target_p.data)
 
-    def learn(self, env: gym.Env, eval_env: gym.Env, buffer: ReplayBuffer, steps: int):
+    def learn(self, env: gym.Env, eval_env: gym.Env, steps: int):
+        buffer = ReplayBuffer(env.observation_space, env.action_space, REPLAY_BUFFER_SIZE)
+
+        start = datetime.now()
         state = env.reset()
         for i_step in range(steps):
             if i_step < LEARNING_STARTS:
@@ -178,22 +171,23 @@ class SAC:
                 for i_update in range(UPDATES_PER_STEP):
                     self.update(buffer)
 
-            state = next_state
-            if done:
-                state = env.reset()
+            state = env.reset() if done else next_state
 
             if i_step % 1000 == 0:
                 eval_env.seed(42)
                 score = 0
                 for i_eval_eps in range(5):
                     state, done = eval_env.reset(), False
-                    eval_env.render()
                     while not done:
                         action = self.act(state)
                         state, reward, done, info = eval_env.step(action)
-                        eval_env.render()
                         score += reward
-                print(i_step, torch.exp(self.log_alpha).item(), score.item())
+                print(
+                    i_step,
+                    (datetime.now() - start).total_seconds(),
+                    torch.exp(self.log_alpha).item(),
+                    score.item(),
+                )
 
 
 def main(seed=0):
@@ -207,9 +201,8 @@ def main(seed=0):
     eval_env.seed(seed + 1)
 
     sac = SAC(env.observation_space, env.action_space)
-    buffer = ReplayBuffer(env.observation_space, env.action_space, REPLAY_BUFFER_SIZE)
 
-    sac.learn(env, eval_env, buffer, 50_000)
+    sac.learn(env, eval_env, 10_000)
 
     state = env.reset()
     env.render()
