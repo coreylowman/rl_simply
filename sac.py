@@ -2,7 +2,7 @@ from datetime import datetime
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
-from torch.distributions import Normal
+from torch.distributions import Normal, TransformedDistribution, TanhTransform
 import numpy as np
 import gym
 from gym.spaces import Box, Discrete
@@ -59,15 +59,12 @@ class Actor(nn.Module):
         logstd = torch.clamp(logstd, -20, 2)
 
         dist = Normal(mean, torch.exp(logstd) * float(sample))
+        dist = TransformedDistribution(dist, TanhTransform())
 
         action = dist.rsample()
-        squashed_action = torch.tanh(action)
-
         log_prob = dist.log_prob(action)
-        # squash_correction = torch.log(1 - squashed_action.square() + 1e-6)
-        # log_prob -= squash_correction  # TODO what does this impact?
 
-        return squashed_action, log_prob
+        return action, log_prob
 
 
 class SAC:
@@ -115,8 +112,8 @@ class SAC:
             target_q = batch.reward + DISCOUNT * batch.done * (next_q - alpha * next_log_prob)
 
         q1, q2 = self.critics(torch.cat((batch.state, batch.action), -1))
-        q1_loss = (q1 - target_q).square().mean()
-        q2_loss = (q2 - target_q).square().mean()
+        q1_loss = F.smooth_l1_loss(q1, target_q)
+        q2_loss = F.smooth_l1_loss(q2, target_q)
         critic_loss = (q1_loss + q2_loss) / 2.0
 
         self.critics_opt.zero_grad()
@@ -208,7 +205,7 @@ def main(seed=0):
     env.render()
     episode_reward = 0
     while True:
-        state, reward, done, info = env.step(ddqn.act(state))
+        state, reward, done, info = env.step(sac.act(state))
         episode_reward += reward
         env.render()
         if done:
