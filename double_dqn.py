@@ -49,6 +49,7 @@ class DoubleDQN:
             EPSILON_START - (EPSILON_START - EPSILON_END) * self.num_steps / EPSILON_DURATION,
         )
 
+    @torch.no_grad()
     def act(self, state: torch.Tensor, is_training: bool = False) -> int:
         if is_training:
             self.num_steps += 1
