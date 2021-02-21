@@ -1,7 +1,6 @@
 from collections import namedtuple
 
 import torch
-from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 from gym.spaces import Space, Box, Discrete
 
 Batch = namedtuple("Batch", ["state", "action", "reward", "done", "next_state"])
@@ -46,15 +45,3 @@ class ReplayBuffer:
             self.done[indices],
             self.state_prime[indices],
         )
-
-    def iter_samples(self, batch_size):
-        for indices in BatchSampler(
-            SubsetRandomSampler(range(self.size)), batch_size, drop_last=True
-        ):
-            yield (
-                self.state[indices],
-                self.action[indices],
-                self.reward[indices],
-                self.done[indices],
-                self.state_prime[indices],
-            )

@@ -12,13 +12,13 @@ from torch.distributions import (
 )
 
 import gym
-from gym.spaces import Box, Discrete
+from gym.spaces import Box
 
 from memory import ReplayBuffer, Batch
 from wrappers import TorchWrapper, NormalizeActionsWrapper
 
 
-def MLP(inp_dim: int, out_dim: int, hid_dim: int = 256, activation_fn=nn.ReLU):
+def MLP(inp_dim: int, out_dim: int, hid_dim: int = 256, activation_fn: nn.Module = nn.ReLU):
     return nn.Sequential(
         nn.Linear(inp_dim, hid_dim),
         activation_fn(),
@@ -32,12 +32,12 @@ def Critic(inp_dim: int, out_dim: int, *args, **kwargs):
     return MLP(inp_dim + out_dim, 1, **kwargs)
 
 
-class ModulePair(nn.Module):
-    def __init__(self, cls, *args, **kwargs):
+class TwinCritics(nn.Module):
+    def __init__(self, *args, **kwargs):
         super().__init__()
 
-        self.a = cls(*args, **kwargs)
-        self.b = cls(*args, **kwargs)
+        self.a = Critic(*args, **kwargs)
+        self.b = Critic(*args, **kwargs)
 
     def forward(self, x):
         return self.a(x), self.b(x)
@@ -81,7 +81,6 @@ class SAC:
     ):
         self.state_space = state_space
         self.action_space = action_space
-
         self.mini_batch_size = mini_batch_size
         self.replay_buffer_size = replay_buffer_size
         self.learning_starts = learning_starts
@@ -92,12 +91,9 @@ class SAC:
         self.discount = discount
         self.tau = tau
 
-        state_dim = state_space.shape[0]
-        action_dim = action_space.shape[0]
-
-        self.actor = TanhGaussianActor(state_dim, action_dim)
-        self.critics = ModulePair(Critic, state_dim, action_dim)
-        self.critic_targets = ModulePair(Critic, state_dim, action_dim)
+        self.actor = TanhGaussianActor(state_space.shape[0], action_space.shape[0])
+        self.critics = TwinCritics(state_space.shape[0], action_space.shape[0])
+        self.critic_targets = TwinCritics(state_space.shape[0], action_space.shape[0])
         self.log_alpha = nn.Parameter(torch.tensor([0.0]))
 
         self.actor_opt = optim.Adam(self.actor.parameters(), lr=self.actor_lr)
@@ -110,7 +106,7 @@ class SAC:
 
     @torch.no_grad()
     def act(self, state: torch.Tensor, is_training: bool = False) -> int:
-        action, _ = self.actor(state, sample=is_training)
+        action, _log_prob = self.actor(state, sample=is_training)
         return action
 
     def update(self, buffer: ReplayBuffer):
@@ -172,8 +168,7 @@ class SAC:
     def learn(self, env: gym.Env, eval_env: gym.Env, steps: int):
         buffer = ReplayBuffer(env.observation_space, env.action_space, self.replay_buffer_size)
 
-        start = datetime.now()
-        state = env.reset()
+        state, start = env.reset(), datetime.now()
         for i_step in range(steps):
             if i_step < self.learning_starts:
                 action = torch.from_numpy(self.action_space.sample()).float()
@@ -181,30 +176,31 @@ class SAC:
                 action = self.act(state, is_training=True)
 
             next_state, reward, done, info = env.step(action)
-
             buffer.add(state, action, reward, done, next_state)
+            state = env.reset() if done else next_state
 
             if i_step >= self.learning_starts:
                 for i_update in range(self.updates_per_step):
                     self.update(buffer)
 
-            state = env.reset() if done else next_state
+            if i_step % 1000 == 0 and i_step > 0:
+                print(i_step, evaluate(eval_env, 42, self, 5), datetime.now() - start)
 
-            if i_step % 1000 == 0:
-                eval_env.seed(42)
-                score = 0
-                for i_eval_eps in range(5):
-                    state, done = eval_env.reset(), False
-                    while not done:
-                        action = self.act(state)
-                        state, reward, done, info = eval_env.step(action)
-                        score += reward
-                print(
-                    i_step,
-                    (datetime.now() - start).total_seconds(),
-                    torch.exp(self.log_alpha).item(),
-                    score.item(),
-                )
+
+def evaluate(env: gym.Env, seed: int, sac: SAC, num_episodes: int, render: bool = False) -> float:
+    env.seed(seed)
+    score = 0
+    for i_eval_eps in range(num_episodes):
+        state, done = env.reset(), False
+        if render:
+            print(score)
+            env.render()
+        while not done:
+            state, reward, done, info = env.step(sac.act(state))
+            score += reward
+            if render:
+                env.render()
+    return score.item()
 
 
 def main(seed=0):
@@ -220,18 +216,7 @@ def main(seed=0):
     sac = SAC(env.observation_space, env.action_space)
     sac.learn(env, eval_env, 10_000)
 
-    env.seed(seed + 2)
-    state = env.reset()
-    env.render()
-    episode_reward = 0
-    while True:
-        state, reward, done, info = env.step(sac.act(state))
-        episode_reward += reward
-        env.render()
-        if done:
-            state = env.reset()
-            print(episode_reward)
-            episode_reward = 0
+    print(evaluate(env, seed + 2, sac, 50, True))
 
     env.close()
 
