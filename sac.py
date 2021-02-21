@@ -1,4 +1,5 @@
 from datetime import datetime
+
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
@@ -9,7 +10,7 @@ from torch.distributions import (
     AffineTransform,
     Beta,
 )
-import numpy as np
+
 import gym
 from gym.spaces import Box, Discrete
 
@@ -105,7 +106,7 @@ class SAC:
 
         self.critic_targets.load_state_dict(self.critics.state_dict())
 
-        self.target_entropy = -np.prod(action_space.shape)
+        self.target_entropy = -torch.prod(torch.tensor(action_space.shape))
 
     @torch.no_grad()
     def act(self, state: torch.Tensor, is_training: bool = False) -> int:
