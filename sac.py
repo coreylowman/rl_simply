@@ -2,23 +2,19 @@ from datetime import datetime
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
-from torch.distributions import Normal, TransformedDistribution, TanhTransform
+from torch.distributions import (
+    Normal,
+    TransformedDistribution,
+    TanhTransform,
+    AffineTransform,
+    Beta,
+)
 import numpy as np
 import gym
 from gym.spaces import Box, Discrete
 
 from memory import ReplayBuffer, Batch
 from wrappers import TorchWrapper, NormalizeActionsWrapper
-
-MINI_BATCH_SIZE = 256
-REPLAY_BUFFER_SIZE = 50_000
-LEARNING_STARTS = 1000
-UPDATES_PER_STEP = 1
-ACTOR_LR = 3e-4
-CRITIC_LR = 3e-4
-ALPHA_LR = 3e-4
-DISCOUNT = 0.99
-TAU = 0.005
 
 
 def MLP(inp_dim: int, out_dim: int, hid_dim: int = 256, activation_fn=nn.ReLU):
@@ -46,7 +42,7 @@ class ModulePair(nn.Module):
         return self.a(x), self.b(x)
 
 
-class Actor(nn.Module):
+class TanhGaussianActor(nn.Module):
     def __init__(self, inp_dim: int, out_dim: int, *args, **kwargs):
         super().__init__()
         self.out_dim = out_dim
@@ -55,10 +51,10 @@ class Actor(nn.Module):
     def forward(self, x, sample=True):
         x = self.trunk(x)
 
-        mean, logstd = torch.split(x, self.out_dim, -1)
-        logstd = torch.clamp(logstd, -20, 2)
+        mean, log_std = torch.split(x, self.out_dim, -1)
+        log_std = torch.clamp(log_std, -20, 2)
 
-        dist = Normal(mean, torch.exp(logstd) * float(sample))
+        dist = Normal(mean, torch.exp(log_std) * float(sample))
         dist = TransformedDistribution(dist, TanhTransform())
 
         action = dist.rsample()
@@ -68,21 +64,44 @@ class Actor(nn.Module):
 
 
 class SAC:
-    def __init__(self, state_space: Box, action_space: Box):
+    def __init__(
+        self,
+        state_space: Box,
+        action_space: Box,
+        mini_batch_size: int = 256,
+        replay_buffer_size: int = 50_000,
+        learning_starts: int = 1000,
+        updates_per_step: int = 1,
+        actor_lr: float = 3e-4,
+        critic_lr: float = 3e-4,
+        alpha_lr: float = 3e-4,
+        discount: float = 0.99,
+        tau: float = 0.005,
+    ):
         self.state_space = state_space
         self.action_space = action_space
+
+        self.mini_batch_size = mini_batch_size
+        self.replay_buffer_size = replay_buffer_size
+        self.learning_starts = learning_starts
+        self.updates_per_step = updates_per_step
+        self.actor_lr = actor_lr
+        self.critic_lr = critic_lr
+        self.alpha_lr = alpha_lr
+        self.discount = discount
+        self.tau = tau
 
         state_dim = state_space.shape[0]
         action_dim = action_space.shape[0]
 
-        self.actor = Actor(state_dim, action_dim)
+        self.actor = TanhGaussianActor(state_dim, action_dim)
         self.critics = ModulePair(Critic, state_dim, action_dim)
         self.critic_targets = ModulePair(Critic, state_dim, action_dim)
         self.log_alpha = nn.Parameter(torch.tensor([0.0]))
 
-        self.actor_opt = optim.Adam(self.actor.parameters(), lr=ACTOR_LR)
-        self.critics_opt = optim.Adam(self.critics.parameters(), lr=CRITIC_LR)
-        self.alpha_opt = optim.Adam([self.log_alpha], lr=ALPHA_LR)
+        self.actor_opt = optim.Adam(self.actor.parameters(), lr=self.actor_lr)
+        self.critics_opt = optim.Adam(self.critics.parameters(), lr=self.critic_lr)
+        self.alpha_opt = optim.Adam([self.log_alpha], lr=self.alpha_lr)
 
         self.critic_targets.load_state_dict(self.critics.state_dict())
 
@@ -94,7 +113,7 @@ class SAC:
         return action
 
     def update(self, buffer: ReplayBuffer):
-        batch = buffer.sample(MINI_BATCH_SIZE)
+        batch = buffer.sample(self.mini_batch_size)
 
         self.update_critics(batch)
         self.update_actor(batch)
@@ -109,7 +128,7 @@ class SAC:
 
             next_q1, next_q2 = self.critic_targets(torch.cat((batch.next_state, next_action), -1))
             next_q = torch.minimum(next_q1, next_q2)
-            target_q = batch.reward + DISCOUNT * batch.done * (next_q - alpha * next_log_prob)
+            target_q = batch.reward + self.discount * batch.done * (next_q - alpha * next_log_prob)
 
         q1, q2 = self.critics(torch.cat((batch.state, batch.action), -1))
         q1_loss = F.smooth_l1_loss(q1, target_q)
@@ -147,15 +166,15 @@ class SAC:
 
     def soft_update_target_critics(self):
         for p, target_p in zip(self.critics.parameters(), self.critic_targets.parameters()):
-            target_p.data.copy_(TAU * p.data + (1.0 - TAU) * target_p.data)
+            target_p.data.copy_(self.tau * p.data + (1.0 - self.tau) * target_p.data)
 
     def learn(self, env: gym.Env, eval_env: gym.Env, steps: int):
-        buffer = ReplayBuffer(env.observation_space, env.action_space, REPLAY_BUFFER_SIZE)
+        buffer = ReplayBuffer(env.observation_space, env.action_space, self.replay_buffer_size)
 
         start = datetime.now()
         state = env.reset()
         for i_step in range(steps):
-            if i_step < LEARNING_STARTS:
+            if i_step < self.learning_starts:
                 action = torch.from_numpy(self.action_space.sample()).float()
             else:
                 action = self.act(state, is_training=True)
@@ -164,8 +183,8 @@ class SAC:
 
             buffer.add(state, action, reward, done, next_state)
 
-            if i_step >= LEARNING_STARTS:
-                for i_update in range(UPDATES_PER_STEP):
+            if i_step >= self.learning_starts:
+                for i_update in range(self.updates_per_step):
                     self.update(buffer)
 
             state = env.reset() if done else next_state
@@ -198,9 +217,9 @@ def main(seed=0):
     eval_env.seed(seed + 1)
 
     sac = SAC(env.observation_space, env.action_space)
-
     sac.learn(env, eval_env, 10_000)
 
+    env.seed(seed + 2)
     state = env.reset()
     env.render()
     episode_reward = 0
