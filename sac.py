@@ -3,13 +3,7 @@ from datetime import datetime
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
-from torch.distributions import (
-    Normal,
-    TransformedDistribution,
-    TanhTransform,
-    AffineTransform,
-    Beta,
-)
+from torch.distributions import Normal, TransformedDistribution, TanhTransform
 
 import gym
 from gym.spaces import Box
