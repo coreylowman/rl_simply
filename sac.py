@@ -12,12 +12,12 @@ from memory import ReplayBuffer, Batch
 from wrappers import TorchWrapper, NormalizeActionsWrapper
 
 
-def MLP(inp_dim: int, out_dim: int, hid_dim: int = 256, activation_fn: nn.Module = nn.ReLU):
+def MLP(inp_dim: int, out_dim: int, hid_dim: int = 256):
     return nn.Sequential(
         nn.Linear(inp_dim, hid_dim),
-        activation_fn(),
+        nn.ReLU(),
         nn.Linear(hid_dim, hid_dim),
-        activation_fn(),
+        nn.ReLU(),
         nn.Linear(hid_dim, out_dim),
     )
 
@@ -40,13 +40,10 @@ class TwinCritics(nn.Module):
 class TanhGaussianActor(nn.Module):
     def __init__(self, inp_dim: int, out_dim: int, *args, **kwargs):
         super().__init__()
-        self.out_dim = out_dim
         self.trunk = MLP(inp_dim, 2 * out_dim, *args, **kwargs)
 
     def forward(self, x, sample=True):
-        x = self.trunk(x)
-
-        mean, log_std = torch.split(x, self.out_dim, -1)
+        mean, log_std = self.trunk(x).chunk(2, -1)
         log_std = torch.clamp(log_std, -20, 2)
 
         dist = Normal(mean, torch.exp(log_std) * float(sample))
@@ -59,31 +56,18 @@ class TanhGaussianActor(nn.Module):
 
 
 class SAC:
-    def __init__(
-        self,
-        state_space: Box,
-        action_space: Box,
-        mini_batch_size: int = 256,
-        replay_buffer_size: int = 50_000,
-        learning_starts: int = 1000,
-        updates_per_step: int = 1,
-        actor_lr: float = 3e-4,
-        critic_lr: float = 3e-4,
-        alpha_lr: float = 3e-4,
-        discount: float = 0.99,
-        tau: float = 0.005,
-    ):
+    mini_batch_size: int = 256
+    replay_buffer_size: int = 50_000
+    learning_starts: int = 1000
+    actor_lr: float = 3e-4
+    critic_lr: float = 3e-4
+    alpha_lr: float = 3e-4
+    discount: float = 0.99
+    tau: float = 0.005
+
+    def __init__(self, state_space: Box, action_space: Box):
         self.state_space = state_space
         self.action_space = action_space
-        self.mini_batch_size = mini_batch_size
-        self.replay_buffer_size = replay_buffer_size
-        self.learning_starts = learning_starts
-        self.updates_per_step = updates_per_step
-        self.actor_lr = actor_lr
-        self.critic_lr = critic_lr
-        self.alpha_lr = alpha_lr
-        self.discount = discount
-        self.tau = tau
 
         self.actor = TanhGaussianActor(state_space.shape[0], action_space.shape[0])
         self.critics = TwinCritics(state_space.shape[0], action_space.shape[0])
@@ -103,13 +87,10 @@ class SAC:
         action, _log_prob = self.actor(state, sample=is_training)
         return action
 
-    def update(self, buffer: ReplayBuffer):
-        batch = buffer.sample(self.mini_batch_size)
-
+    def update(self, batch: Batch):
         self.update_critics(batch)
         self.update_actor(batch)
         self.update_alpha(batch)
-
         self.soft_update_target_critics()
 
     def update_critics(self, batch: Batch):
@@ -122,9 +103,7 @@ class SAC:
             target_q = batch.reward + self.discount * batch.done * (next_q - alpha * next_log_prob)
 
         q1, q2 = self.critics(torch.cat((batch.state, batch.action), -1))
-        q1_loss = F.smooth_l1_loss(q1, target_q)
-        q2_loss = F.smooth_l1_loss(q2, target_q)
-        critic_loss = (q1_loss + q2_loss) / 2.0
+        critic_loss = F.smooth_l1_loss(q1, target_q) + F.smooth_l1_loss(q2, target_q)
 
         self.critics_opt.zero_grad()
         critic_loss.backward()
@@ -174,8 +153,7 @@ class SAC:
             state = env.reset() if done else next_state
 
             if i_step >= self.learning_starts:
-                for i_update in range(self.updates_per_step):
-                    self.update(buffer)
+                self.update(buffer.sample(self.mini_batch_size))
 
             if i_step % 1000 == 0 and i_step > 0:
                 print(i_step, evaluate(eval_env, 42, self, 5), datetime.now() - start)

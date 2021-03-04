@@ -23,23 +23,15 @@ def Actor(inp_dim: int, out_dim: int, hid_dim: int = 64):
 
 
 class DQN:
-    def __init__(
-        self,
-        state_space: Box,
-        action_space: Discrete,
-        mini_batch_size: int = 128,
-        replay_buffer_size: int = 50_000,
-        learning_starts: int = 1000,
-        actor_lr: float = 1e-3,
-        discount: float = 0.99,
-    ):
+    mini_batch_size: int = 128
+    replay_buffer_size: int = 50_000
+    learning_starts: int = 1000
+    actor_lr: float = 1e-3
+    discount: float = 0.99
+
+    def __init__(self, state_space: Box, action_space: Discrete):
         self.state_space = state_space
         self.action_space = action_space
-        self.mini_batch_size = mini_batch_size
-        self.replay_buffer_size = replay_buffer_size
-        self.learning_starts = learning_starts
-        self.actor_lr = actor_lr
-        self.discount = discount
 
         self.q = Actor(self.state_space.shape[0], self.action_space.n)
         self.q_target = Actor(self.state_space.shape[0], self.action_space.n)
@@ -51,9 +43,7 @@ class DQN:
     def act(self, state: torch.Tensor) -> int:
         return self.q(state).argmax().item()
 
-    def update(self, buffer: ReplayBuffer):
-        batch = buffer.sample(self.mini_batch_size)
-
+    def update(self, batch: Batch):
         with torch.no_grad():
             max_q_prime = self.q_target(batch.next_state).max(-1)[0].unsqueeze(1)
             target_q = batch.reward + self.discount * max_q_prime * batch.done
@@ -81,7 +71,7 @@ class DQN:
             state = env.reset() if done else next_state
 
             if i_step >= self.learning_starts:
-                self.update(buffer)
+                self.update(buffer.sample(self.mini_batch_size))
 
             if i_step >= self.learning_starts and i_step % 100 == 0:
                 print(i_step, evaluate(eval_env, 42, self, 5), datetime.now() - start)

@@ -38,23 +38,15 @@ class Actor(nn.Module):
 
 
 class DQN:
-    def __init__(
-        self,
-        state_space: Box,
-        action_space: Discrete,
-        mini_batch_size: int = 128,
-        replay_buffer_size: int = 50_000,
-        learning_starts: int = 1000,
-        actor_lr: float = 1e-3,
-        discount: float = 0.99,
-    ):
+    mini_batch_size: int = 128
+    replay_buffer_size: int = 50_000
+    learning_starts: int = 1000
+    actor_lr: float = 1e-3
+    discount: float = 0.99
+
+    def __init__(self, state_space: Box, action_space: Discrete):
         self.state_space = state_space
         self.action_space = action_space
-        self.mini_batch_size = mini_batch_size
-        self.replay_buffer_size = replay_buffer_size
-        self.learning_starts = learning_starts
-        self.actor_lr = actor_lr
-        self.discount = discount
 
         self.q = Actor(self.state_space.shape[0], self.action_space.n)
         self.q_target = Actor(self.state_space.shape[0], self.action_space.n)
