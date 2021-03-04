@@ -109,9 +109,7 @@ class TD3:
     def update_actor(self, batch: Batch):
         action = self.actor(batch.state)
 
-        q1, _q2 = self.critics(torch.cat((batch.state, action), -1))
-
-        actor_loss = torch.mean(-q1)
+        actor_loss = -self.critics.a(torch.cat((batch.state, action), -1)).mean()
 
         self.actor_opt.zero_grad()
         actor_loss.backward()
@@ -143,19 +141,14 @@ class TD3:
 
 
 def evaluate(env: gym.Env, seed: int, td3: TD3, num_episodes: int, render: bool = False) -> float:
-    env.seed(seed)
     score = 0
     for i_eval_eps in range(num_episodes):
+        env.seed(seed + i_eval_eps)
         state, done = env.reset(), False
-        if render:
-            print(score)
-            env.render()
         while not done:
             state, reward, done, info = env.step(td3.act(state))
             score += reward
-            if render:
-                env.render()
-    return score.item()
+    return score.item() / num_episodes
 
 
 def main(seed=0):

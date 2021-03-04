@@ -55,8 +55,6 @@ class DDPG:
         self.actor_target.load_state_dict(self.actor.state_dict())
         self.critic_target.load_state_dict(self.critic.state_dict())
 
-        self.num_updates = 1
-
     @torch.no_grad()
     def act(self, state: torch.Tensor, is_training: bool = False) -> int:
         action = self.actor(state)
@@ -79,7 +77,7 @@ class DDPG:
             target_q = batch.reward + self.discount * batch.done * next_q
 
         q = self.critic(torch.cat((batch.state, batch.action), -1))
-        critic_loss = F.mse_loss(q, target_q)
+        critic_loss = F.smooth_l1_loss(q, target_q)
 
         self.critic_opt.zero_grad()
         critic_loss.backward()
@@ -120,19 +118,14 @@ class DDPG:
 
 
 def evaluate(env: gym.Env, seed: int, ddpg: DDPG, num_episodes: int, render: bool = False) -> float:
-    env.seed(seed)
     score = 0
     for i_eval_eps in range(num_episodes):
+        env.seed(seed + i_eval_eps)
         state, done = env.reset(), False
-        if render:
-            print(score)
-            env.render()
         while not done:
             state, reward, done, info = env.step(ddpg.act(state))
             score += reward
-            if render:
-                env.render()
-    return score.item()
+    return score.item() / num_episodes
 
 
 def main(seed=0):
