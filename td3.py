@@ -52,7 +52,7 @@ class TD3:
     rollout_noise: float = 0.2
     train_noise: float = 0.2
     noise_clip: float = 0.5
-    delay: int = 2
+    actor_frequency: int = 2
 
     def __init__(self, state_space: Box, action_space: Box):
         self.state_space = state_space
@@ -81,7 +81,7 @@ class TD3:
 
     def update(self, batch: Batch):
         self.update_critics(batch)
-        if self.num_updates % self.delay == 0:
+        if self.num_updates % self.actor_frequency == 0:
             self.update_actor(batch)
             self.soft_update(self.actor, self.actor_target)
             self.soft_update(self.critics, self.critic_targets)
@@ -89,11 +89,10 @@ class TD3:
 
     def update_critics(self, batch: Batch):
         with torch.no_grad():
-            next_action = self.actor_target(batch.next_state)
-            next_action += self.train_noise * torch.randn_like(next_action).clamp(
+            noise = (self.train_noise * torch.randn_like(batch.action)).clamp(
                 -self.noise_clip, self.noise_clip
             )
-            next_action = next_action.clamp(-1, 1)
+            next_action = (self.actor_target(batch.next_state) + noise).clamp(-1, 1)
 
             next_q1, next_q2 = self.critic_targets(torch.cat((batch.next_state, next_action), -1))
             next_q = torch.minimum(next_q1, next_q2)

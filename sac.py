@@ -128,7 +128,7 @@ class SAC:
         with torch.no_grad():
             _, log_prob = self.actor(batch.state)
 
-        alpha_loss = torch.mean(-self.log_alpha * (log_prob + self.target_entropy))
+        alpha_loss = -torch.mean(self.log_alpha * (log_prob + self.target_entropy))
 
         self.alpha_opt.zero_grad()
         alpha_loss.backward()
@@ -160,19 +160,14 @@ class SAC:
 
 
 def evaluate(env: gym.Env, seed: int, sac: SAC, num_episodes: int, render: bool = False) -> float:
-    env.seed(seed)
     score = 0
     for i_eval_eps in range(num_episodes):
+        env.seed(seed + i_eval_eps)
         state, done = env.reset(), False
-        if render:
-            print(score)
-            env.render()
         while not done:
             state, reward, done, info = env.step(sac.act(state))
             score += reward
-            if render:
-                env.render()
-    return score.item()
+    return score.item() / num_episodes
 
 
 def main(seed=0):
