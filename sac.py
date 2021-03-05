@@ -47,7 +47,7 @@ class TanhGaussianActor(nn.Module):
         log_std = torch.clamp(log_std, -20, 2)
 
         dist = Normal(mean, torch.exp(log_std) * float(sample))
-        dist = TransformedDistribution(dist, TanhTransform())
+        dist = TransformedDistribution(dist, TanhTransform(cache_size=1))
 
         action = dist.rsample()
         log_prob = dist.log_prob(action)
@@ -128,7 +128,7 @@ class SAC:
         with torch.no_grad():
             _, log_prob = self.actor(batch.state)
 
-        alpha_loss = -torch.mean(self.log_alpha * (log_prob + self.target_entropy))
+        alpha_loss = (self.log_alpha.exp() * (-log_prob - self.target_entropy).detach()).mean()
 
         self.alpha_opt.zero_grad()
         alpha_loss.backward()
