@@ -90,7 +90,6 @@ class SAC:
     def update(self, batch: Batch):
         self.update_critics(batch)
         self.update_actor(batch)
-        self.update_alpha(batch)
         self.soft_update_target_critics()
 
     def update_critics(self, batch: Batch):
@@ -124,11 +123,7 @@ class SAC:
         actor_loss.backward()
         self.actor_opt.step()
 
-    def update_alpha(self, batch: Batch):
-        with torch.no_grad():
-            _, log_prob = self.actor(batch.state)
-
-        alpha_loss = (self.log_alpha.exp() * (-log_prob - self.target_entropy).detach()).mean()
+        alpha_loss = -(self.log_alpha * (log_prob + self.target_entropy).detach()).mean()
 
         self.alpha_opt.zero_grad()
         alpha_loss.backward()
