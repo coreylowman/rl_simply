@@ -10,21 +10,21 @@ Batch = namedtuple(
 
 
 class ReplayBuffer:
-    def __init__(self, state_space: Box, action_space: Space, size: int):
+    def __init__(self, state_space: Box, action_space: Space, size: int, seed: int = 0):
         self.state = torch.zeros(size, state_space.shape[0], dtype=torch.float)
         if isinstance(action_space, Discrete):
             self.action = torch.zeros(size, 1, dtype=torch.int64)
         elif isinstance(action_space, Box):
             self.action = torch.zeros(size, action_space.shape[0], dtype=torch.float)
-        self.reward = torch.zeros(size, 1)
-        self.done = torch.zeros(size, 1)
+        self.reward = torch.zeros(size, 1, dtype=torch.float)
+        self.done = torch.zeros(size, 1, dtype=torch.float)
         self.state_prime = torch.zeros(size, state_space.shape[0])
 
         self.pointer = 0
         self.size = 0
         self.max_size = size
 
-        self.num_steps = 0
+        self.np_random = np.random.RandomState(seed)
 
     def add(self, state, action, reward, done, state_prime) -> "ReplayBuffer":
         self.state[self.pointer] = state
@@ -35,12 +35,11 @@ class ReplayBuffer:
 
         self.pointer = (self.pointer + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
-        self.num_steps += 1
 
         return self
 
     def sample(self, batch_size):
-        indices = torch.randperm(self.size)[:batch_size]
+        indices = torch.from_numpy(self.np_random.choice(self.size, batch_size)).long()
         return Batch(
             self.state[indices],
             self.action[indices],
@@ -61,7 +60,7 @@ class PrioritizedReplayBuffer:
         alpha: float,
         beta: float,
         beta_increment: float,
-        seed: int,
+        seed: int = 0,
     ):
         self.state = torch.zeros(size, state_space.shape[0], dtype=torch.float)
         if isinstance(action_space, Discrete):
